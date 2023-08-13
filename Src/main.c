@@ -82,8 +82,7 @@ int main(void)
   DWT_CTRL |= (1 << 0); //enable cycle counting
   SEGGER_SYSVIEW_Conf();
   SEGGER_SYSVIEW_Start();
-
-
+	
   xTaskCreate(MainTaskHandler, "Main Task", 200, NULL, 3, &MainTask);
 
   vTaskStartScheduler();
