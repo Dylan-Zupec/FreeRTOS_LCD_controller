@@ -1,4 +1,4 @@
-# FreeRTOS_LCD_Controller
+# FreeRTOS_LCD_controller
  
 This project is my first venture into the world of real-time operating systems.
 It is in the same vein as my previous project which used an FPGA. The target of
