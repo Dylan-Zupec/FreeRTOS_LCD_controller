@@ -50,9 +50,12 @@ typedef enum {LCD_WRITE, LCD_READ} LCD_Operation_e;
 
 typedef struct
 {
-	LCD_Register_e dest_reg;
 	uint8_t data;
-	uint8_t check_bf; //check busy flag before write
+	LCD_Register_e dest_reg : 1;
+	//busy flag is not available for first part of init sequence
+	uint8_t check_busyflag : 1;
+	//only upper nibble is written in 4-bit mode for first part of init sequence
+	uint8_t mode_selected : 1;
 } LCD_Frame_t;
 
 GPIO_TypeDef* const LCD_DATA_GPIO_PORTS[] =
@@ -79,3 +82,4 @@ uint8_t init_sequence_done;
 void LCD_InitHandler(void* parameters);
 void LCD_WriteHandler(void* parameters);
 void LCD_WritePins(LCD_Register_e dest_reg, LCD_Operation_e operation, uint8_t data);
+void LCD_4Bit_WritePins(LCD_Register_e dest_reg, LCD_Operation_e operation, uint8_t data, uint8_t upper_nibble_only);

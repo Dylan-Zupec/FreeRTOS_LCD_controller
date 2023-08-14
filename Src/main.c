@@ -83,7 +83,6 @@ int main(void)
   SEGGER_SYSVIEW_Conf();
   SEGGER_SYSVIEW_Start();
 
-
   xTaskCreate(MainTaskHandler, "Main Task", 200, NULL, 3, &MainTask);
 
   vTaskStartScheduler();
@@ -214,7 +213,8 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void MainTaskHandler(void* parameters)
 {
-	LCD_ControllerInit();
+	//initialize LCD with 4-bit mode
+	LCD_ControllerInit(pdTRUE);
 
 	LCD_CursorMode(pdTRUE, pdTRUE); //show and blink cursor
 	LCD_Write("FreeRTOS LCD App");

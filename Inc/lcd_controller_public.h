@@ -1,6 +1,6 @@
 /*lcd_controller_public.h*/
 
-void LCD_ControllerInit(void);
+void LCD_ControllerInit(uint32_t use_4bit_mode);
 void LCD_Clear(void);
 void LCD_Home(void);
 void LCD_CursorMode(uint8_t show_cursor, uint8_t blink_cursor);
