@@ -2,121 +2,70 @@
 
 #include "lcd_controller_private.h"
 
-void LCD_ControllerInit(uint32_t use_4bit_mode)
+void LCD_InitController(uint8_t use_4bit_mode)
 {
-	init_task_done = init_sequence_done = pdFALSE;
+	cursor_showing = cursor_blinking = pdFALSE;
 
-	//create queue for init sequence instructions
-	LCD_InitQueue = xQueueCreate(9, sizeof(LCD_Frame_t));
-	//create queue for text data and regular instructions
+	//stores data to write to LCD
 	LCD_WriteQueue = xQueueCreate(40, sizeof(LCD_Frame_t));
 
-	//create task to load init queue
-	xTaskCreate(LCD_InitHandler, "LCD Init", 200, (void*)use_4bit_mode, 4, &LCD_InitTask);
-	//create task to process both queues and write to LCD
-	xTaskCreate(LCD_WriteHandler, "LCD Write", 200, (void*)use_4bit_mode, 2, &LCD_WriteTask);
+	//writes queued data to LCD
+	xTaskCreate(LCD_WriteHandler, "LCD Write", 200,
+			(void*)(uint32_t)use_4bit_mode, 3, &LCD_WriteTask);
+
+	LCD_WriteInitSeq(use_4bit_mode);
+
+	LCD_SetFuncMode(use_4bit_mode ? LCD_4_BIT_MODE : LCD_8_BIT_MODE,
+			LCD_2_LINE_MODE, LCD_5x8_FONT);
+
+	LCD_TurnOffDisplay();
+
+	LCD_ClearDisplay();
+
+	LCD_SetEntryMode(LCD_AUTO_INCREMENT, LCD_AUTO_SHIFT_CURSOR);
+
+	LCD_TurnOnDisplay();
 }
 
-void LCD_InitHandler(void* parameters)
+void LCD_WriteHandler(void* use_4bit_mode)
 {
-	LCD_Frame_t frame;
+	//busy flag is not available for first part of init sequence
+	uint8_t busyflag_available = pdFALSE;
+	//only upper nibble is written in first part of init sequence in 4-bit mode
+	uint8_t lower_nibble_writable = pdFALSE;
 
-	//first three instructions are function set
-	frame.data = LCD_FUNC_SET | LCD_8_BIT_MODE;
-	//all data is being written to instruction register
-	frame.dest_reg = LCD_REG_INSTRUCTION;
-	//busy flag not yet available
-	frame.check_busyflag = pdFALSE;
-	//only write upper nibble in 4-bit mode
-	frame.mode_selected = pdFALSE;
-
-	//wait 100 ms after power on
-	vTaskDelay(pdMS_TO_TICKS(100));
-	xQueueSend(LCD_InitQueue, &frame, portMAX_DELAY);
-
-	//wait another 10 ms
-	vTaskDelay(pdMS_TO_TICKS(10));
-	xQueueSend(LCD_InitQueue, &frame, portMAX_DELAY);
-
-	//wait at least 200 us
-	HAL_Delay(1); //not ideal but shortest delay possible
-	xQueueSend(LCD_InitQueue, &frame, portMAX_DELAY);
-
-	//busy flag is now available
-	frame.check_busyflag = pdTRUE;
-
-	//@parameters is TRUE if 4-bit mode is selected
-	if((uint32_t)parameters == pdTRUE)
-	{
-		//extra function set is required if using 4-bit mode
-		frame.data = LCD_FUNC_SET | LCD_4_BIT_MODE;
-		xQueueSend(LCD_InitQueue, &frame, portMAX_DELAY);
-	}
-
-	//both nibbles are hereby both written
-	//only applicable for 4-bit mode
-	frame.mode_selected = pdTRUE;
-
-	//this function set is for real
-	frame.data = LCD_FUNC_SET | ((uint32_t)parameters == pdTRUE ? LCD_4_BIT_MODE : LCD_8_BIT_MODE) | LCD_2_LINE_MODE | LCD_5x8_FONT;
-	xQueueSend(LCD_InitQueue, &frame, portMAX_DELAY);
-
-	//turn off display
-	frame.data = LCD_DISPLAY_CTRL | LCD_DISPLAY_OFF | LCD_CURSOR_OFF | LCD_CURSOR_BLINK_OFF;
-	xQueueSend(LCD_InitQueue, &frame, portMAX_DELAY);
-
-	//clear display RAM and set cursor to (0,0)
-	frame.data = LCD_CLEAR;
-	xQueueSend(LCD_InitQueue, &frame, portMAX_DELAY);
-
-	//set entry mode to increment cursor
-	frame.data = LCD_ENTRY_MODE | LCD_AUTO_INCREMENT | LCD_AUTO_SHIFT_CURSOR;
-	xQueueSend(LCD_InitQueue, &frame, portMAX_DELAY);
-
-	//turn on display
-	frame.data = LCD_DISPLAY_CTRL | LCD_DISPLAY_ON | LCD_CURSOR_OFF | LCD_CURSOR_BLINK_OFF;
-	xQueueSend(LCD_InitQueue, &frame, portMAX_DELAY);
-
-	init_task_done = pdTRUE;
-
-	vTaskDelete(NULL);
-}
-
-void LCD_WriteHandler(void* parameters)
-{
 	LCD_Frame_t frame;
 
 	while(1)
 	{
-		//init task has finished loading queue but data has not been fully processed yet
-		if(!init_sequence_done && init_task_done &&
-				uxQueueMessagesWaiting(LCD_InitQueue) == 0)
-		{
-			init_sequence_done = pdTRUE;
-			vQueueDelete(LCD_InitQueue);
-		}
+		xQueueReceive(LCD_WriteQueue, &frame, portMAX_DELAY);
 
-		if(init_sequence_done)
-			xQueueReceive(LCD_WriteQueue, &frame, portMAX_DELAY);
-		else
-			xQueueReceive(LCD_InitQueue, &frame, portMAX_DELAY);
+		//init task notifys index 0 when busy flag is available
+		if(!busyflag_available && ulTaskNotifyTakeIndexed(0, pdTRUE, 0) == pdTRUE)
+			busyflag_available = pdTRUE;
 
+		//init task notifys index 1 when lower nibble is writable
+		if(!lower_nibble_writable && ulTaskNotifyTakeIndexed(1, pdTRUE, 0) == pdTRUE)
+			lower_nibble_writable = pdTRUE;
 
-		if(frame.check_busyflag)
-		{
-			//Do not bother actually checking busy flag for now as it is no better than just using
-			//a delay until shorter delays are implemented
+		//Do not bother actually checking busy flag for now as it is no better
+		//than just using a delay until shorter delays are implemented
+		if(busyflag_available)
 			HAL_Delay(2);
-		}
 
-		if((uint32_t)parameters == pdTRUE) //use 4-bit mode
-			LCD_4Bit_WritePins(frame.dest_reg, LCD_WRITE, frame.data, !frame.mode_selected);
+		if((uint32_t)use_4bit_mode)
+		{
+			LCD_4Bit_WritePins(frame.dest_reg, LCD_WRITE, frame.data >> 4);
+
+			if(lower_nibble_writable)
+				LCD_4Bit_WritePins(frame.dest_reg, LCD_WRITE, frame.data);
+		}
 		else //use 8-bit mode
-			LCD_WritePins(frame.dest_reg, LCD_WRITE, frame.data);
+			LCD_8Bit_WritePins(frame.dest_reg, LCD_WRITE, frame.data);
 	}
 }
 
-void LCD_WritePins(LCD_Register_e dest_reg, LCD_Operation_e operation, uint8_t data)
+void LCD_8Bit_WritePins(LCD_Register_e dest_reg, LCD_Operation_e operation, uint8_t data)
 {
 	//setup data
 	for(uint8_t i=0; i<8; i++)
@@ -128,19 +77,22 @@ void LCD_WritePins(LCD_Register_e dest_reg, LCD_Operation_e operation, uint8_t d
 	//pulse enable high
 	HAL_GPIO_WritePin(LCD_E_GPIO_Port, LCD_E_Pin, GPIO_PIN_SET);
 
+	//data setup time and enable pulse high width
 	HAL_Delay(1);
 
 	//LCD is written on falling edge of enable
 	HAL_GPIO_WritePin(LCD_E_GPIO_Port, LCD_E_Pin, GPIO_PIN_RESET);
 
+	//data hold time and enable pulse low width
 	HAL_Delay(1);
 }
 
-void LCD_4Bit_WritePins(LCD_Register_e dest_reg, LCD_Operation_e operation, uint8_t data, uint8_t upper_nibble_only)
+void LCD_4Bit_WritePins(LCD_Register_e dest_reg, LCD_Operation_e operation, uint8_t data)
 {
-	//setup data for upper nibble
-	for(uint8_t i=4; i<8; i++)
-		HAL_GPIO_WritePin(LCD_DATA_GPIO_PORTS[i], LCD_DATA_GPIO_PINS[i], (data >> i) & 1);
+	//writes lower nibble of data only
+	//setup data
+	for(uint8_t i=4, j=0; i<8; i++, j++)
+		HAL_GPIO_WritePin(LCD_DATA_GPIO_PORTS[i], LCD_DATA_GPIO_PINS[i], (data >> j) & 1);
 
 	//setup read/write and register select
 	HAL_GPIO_WritePin(LCD_RS_GPIO_Port, LCD_RS_Pin, dest_reg);
@@ -148,99 +100,144 @@ void LCD_4Bit_WritePins(LCD_Register_e dest_reg, LCD_Operation_e operation, uint
 	//pulse enable high
 	HAL_GPIO_WritePin(LCD_E_GPIO_Port, LCD_E_Pin, GPIO_PIN_SET);
 
+	//data setup time and enable pulse high width
 	HAL_Delay(1);
 
 	//LCD is written on falling edge of enable
 	HAL_GPIO_WritePin(LCD_E_GPIO_Port, LCD_E_Pin, GPIO_PIN_RESET);
 
-	HAL_Delay(1);
-
-	//lower nibble is not written if mode is not selected
-	if(upper_nibble_only) return;
-
-	//setup data for lower nibble
-	for(uint8_t i=4, j=0; i<8; i++, j++)
-		HAL_GPIO_WritePin(LCD_DATA_GPIO_PORTS[i], LCD_DATA_GPIO_PINS[i], (data >> j) & 1);
-
-	//pulse enable high
-	HAL_GPIO_WritePin(LCD_E_GPIO_Port, LCD_E_Pin, GPIO_PIN_SET);
-
-	HAL_Delay(1);
-
-	//LCD is written on falling edge of enable
-	HAL_GPIO_WritePin(LCD_E_GPIO_Port, LCD_E_Pin, GPIO_PIN_RESET);
-
+	//data hold time and enable pulse low width
 	HAL_Delay(1);
 }
 
-void LCD_Clear(void)
+void LCD_WriteInitSeq(uint8_t use_4bit_mode)
 {
-	//clear display RAM and set cursor to (0,0)
+	//special init sequence required on power on
+	//wait 100 ms after power on
+	HAL_Delay(100);
+	LCD_SetFuncMode(LCD_8_BIT_MODE, LCD_DONT_CARE, LCD_DONT_CARE);
+
+	//wait another 10 ms
+	HAL_Delay(10);
+	LCD_SetFuncMode(LCD_8_BIT_MODE, LCD_DONT_CARE, LCD_DONT_CARE);
+
+	//wait at least 200 us
+	HAL_Delay(1); //not ideal but shortest delay possible
+	LCD_SetFuncMode(LCD_8_BIT_MODE, LCD_DONT_CARE, LCD_DONT_CARE);
+
+	//busy flag is now available
+	xTaskNotifyGiveIndexed(LCD_WriteTask, 0);
+
+	if(use_4bit_mode)
+	{
+		//extra function set is required for entering 4-bit mode
+		LCD_SetFuncMode(LCD_4_BIT_MODE, LCD_DONT_CARE, LCD_DONT_CARE);
+
+		//both nibbles are hereby written
+		//only applicable in 4-bit mode
+		xTaskNotifyGiveIndexed(LCD_WriteTask, 1);
+	}
+}
+
+void LCD_SetFuncMode(uint8_t data_length_flag, uint8_t line_num_flag, uint8_t font_type_flag)
+{
+	//set data length, number of lines, and font size
 	LCD_Frame_t frame;
 
-	frame.data = LCD_CLEAR;
+	frame.data = LCD_FUNC_SET | data_length_flag | line_num_flag | font_type_flag;
 	frame.dest_reg = LCD_REG_INSTRUCTION;
-	frame.check_busyflag = pdTRUE;
-	frame.mode_selected = pdTRUE;
 
 	xQueueSend(LCD_WriteQueue, &frame, portMAX_DELAY);
 }
 
-void LCD_Home(void)
+void LCD_SetEntryMode(uint8_t shift_dir_flag, uint8_t shift_mode_flag)
 {
-	//set cursor to (0,0)
+	//set cursor or display to auto increment or decrement
 	LCD_Frame_t frame;
 
-	frame.data = LCD_HOME;
+	frame.data = LCD_ENTRY_MODE | shift_dir_flag | shift_mode_flag;
 	frame.dest_reg = LCD_REG_INSTRUCTION;
-	frame.check_busyflag = pdTRUE;
-	frame.mode_selected = pdTRUE;
 
 	xQueueSend(LCD_WriteQueue, &frame, portMAX_DELAY);
 }
 
-void LCD_CursorMode(BaseType_t show_cursor, BaseType_t blink_cursor)
+void LCD_TurnOnDisplay(void)
 {
 	LCD_Frame_t frame;
 
-	frame.data = LCD_DISPLAY_CTRL | LCD_DISPLAY_ON |
-			(show_cursor ? LCD_CURSOR_ON : LCD_CURSOR_OFF) |
-			(blink_cursor ? LCD_CURSOR_BLINK_ON: LCD_CURSOR_BLINK_OFF);
+	frame.data = LCD_DISPLAY_CTRL | LCD_DISPLAY_ON | cursor_showing | cursor_blinking;
 	frame.dest_reg = LCD_REG_INSTRUCTION;
-	frame.check_busyflag = pdTRUE;
-	frame.mode_selected = pdTRUE;
 
 	xQueueSend(LCD_WriteQueue, &frame, portMAX_DELAY);
 }
 
-void LCD_CursorSet(uint8_t row, uint8_t column)
+void LCD_TurnOffDisplay(void)
 {
-	//set cursor to (@row, @column)
 	LCD_Frame_t frame;
 
-	if(row > 1) row = 1;
-	if(column > 15) column = 15;
-
-	frame.data = LCD_CURSOR_SET | (column + row * 0x40);
+	frame.data = LCD_DISPLAY_CTRL | LCD_DISPLAY_OFF | cursor_showing | cursor_blinking;
 	frame.dest_reg = LCD_REG_INSTRUCTION;
-	frame.check_busyflag = pdTRUE;
-	frame.mode_selected = pdTRUE;
 
 	xQueueSend(LCD_WriteQueue, &frame, portMAX_DELAY);
 }
 
-void LCD_Write(const char* const text)
+void LCD_WriteText(const char* text)
 {
-	//write text to LCD
 	LCD_Frame_t frame;
 
 	frame.dest_reg = LCD_REG_DATA;
-	frame.check_busyflag = pdTRUE;
-	frame.mode_selected = pdTRUE;
 
 	for(int i=0; i < strlen(text); i++)
 	{
 		frame.data = text[i];
 		xQueueSend(LCD_WriteQueue, &frame, portMAX_DELAY);
 	}
+}
+
+void LCD_ClearDisplay(void)
+{
+	LCD_Frame_t frame;
+
+	frame.data = LCD_CLEAR;
+	frame.dest_reg = LCD_REG_INSTRUCTION;
+
+	xQueueSend(LCD_WriteQueue, &frame, portMAX_DELAY);
+}
+
+void LCD_SetCursorMode(uint8_t show_cursor, uint8_t blink_cursor)
+{
+	cursor_showing = show_cursor;
+	cursor_blinking = blink_cursor;
+
+	LCD_Frame_t frame;
+
+	frame.data = LCD_DISPLAY_CTRL | LCD_DISPLAY_ON |
+			(show_cursor ? LCD_CURSOR_ON : LCD_CURSOR_OFF) |
+			(blink_cursor ? LCD_CURSOR_BLINK_ON: LCD_CURSOR_BLINK_OFF);
+	frame.dest_reg = LCD_REG_INSTRUCTION;
+
+	xQueueSend(LCD_WriteQueue, &frame, portMAX_DELAY);
+}
+
+void LCD_SetCursorPos(uint8_t row, uint8_t column)
+{
+	if(row > 1) row = 1;
+	if(column > 15) column = 15;
+
+	LCD_Frame_t frame;
+
+	frame.data = LCD_CURSOR_SET | (column + row * 0x40);
+	frame.dest_reg = LCD_REG_INSTRUCTION;
+
+	xQueueSend(LCD_WriteQueue, &frame, portMAX_DELAY);
+}
+
+void LCD_SetCursorHome(void)
+{
+	LCD_Frame_t frame;
+
+	frame.data = LCD_HOME;
+	frame.dest_reg = LCD_REG_INSTRUCTION;
+
+	xQueueSend(LCD_WriteQueue, &frame, portMAX_DELAY);
 }
