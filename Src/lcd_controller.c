@@ -4,14 +4,16 @@
 
 void LCD_InitController(uint8_t use_4bit_mode)
 {
+	LCD_init_task = xTaskGetCurrentTaskHandle();
+
 	cursor_showing = cursor_blinking = pdFALSE;
 
 	//stores data to write to LCD
-	LCD_WriteQueue = xQueueCreate(40, sizeof(LCD_Frame_t));
+	LCD_write_queue = xQueueCreate(40, sizeof(LCD_Frame_t));
 
 	//writes queued data to LCD
 	xTaskCreate(LCD_WriteHandler, "LCD Write", 200,
-			(void*)(uint32_t)use_4bit_mode, 3, &LCD_WriteTask);
+			(void*)(uint32_t)use_4bit_mode, 3, &LCD_write_task);
 
 	LCD_WriteInitSeq(use_4bit_mode);
 
@@ -33,20 +35,23 @@ void LCD_WriteHandler(void* use_4bit_mode)
 	uint8_t busyflag_available = pdFALSE;
 	//only upper nibble is written in first part of init sequence in 4-bit mode
 	uint8_t lower_nibble_writable = pdFALSE;
+	//queue must be fully processed before either flag is set
+	uint8_t awaiting_empty_queue = pdFALSE;
 
 	LCD_Frame_t frame;
 
 	while(1)
 	{
-		xQueueReceive(LCD_WriteQueue, &frame, portMAX_DELAY);
+		xQueueReceive(LCD_write_queue, &frame, portMAX_DELAY);
 
-		//init task notifys index 0 when busy flag is available
-		if(!busyflag_available && ulTaskNotifyTakeIndexed(0, pdTRUE, 0) == pdTRUE)
-			busyflag_available = pdTRUE;
-
-		//init task notifys index 1 when lower nibble is writable
-		if(!lower_nibble_writable && ulTaskNotifyTakeIndexed(1, pdTRUE, 0) == pdTRUE)
-			lower_nibble_writable = pdTRUE;
+		if(!awaiting_empty_queue)
+		{
+			//init task notifies index 0 when busy flag is available
+			//init task notifies index 1 when lower nibble is writable
+			if((!busyflag_available && ulTaskNotifyTakeIndexed(0, pdTRUE, 0) == 1) ||
+					(!lower_nibble_writable && ulTaskNotifyTakeIndexed(1, pdTRUE, 0) == 1))
+				awaiting_empty_queue = pdTRUE;
+		}
 
 		//Do not bother actually checking busy flag for now as it is no better
 		//than just using a delay until shorter delays are implemented
@@ -62,6 +67,22 @@ void LCD_WriteHandler(void* use_4bit_mode)
 		}
 		else //use 8-bit mode
 			LCD_8Bit_WritePins(frame.dest_reg, LCD_WRITE, frame.data);
+
+		if(awaiting_empty_queue)
+		{
+			if(!busyflag_available && uxQueueMessagesWaiting(LCD_write_queue) == 0)
+			{
+				busyflag_available = pdTRUE;
+				awaiting_empty_queue = pdFALSE;
+				xTaskNotify(LCD_init_task, 0, eNoAction);
+			}
+			else if(!lower_nibble_writable && uxQueueMessagesWaiting(LCD_write_queue) == 0)
+			{
+				lower_nibble_writable = pdTRUE;
+				awaiting_empty_queue = pdFALSE;
+				xTaskNotify(LCD_init_task, 0, eNoAction);
+			}
+		}
 	}
 }
 
@@ -125,17 +146,21 @@ void LCD_WriteInitSeq(uint8_t use_4bit_mode)
 	HAL_Delay(1); //not ideal but shortest delay possible
 	LCD_SetFuncMode(LCD_8_BIT_MODE, LCD_DONT_CARE, LCD_DONT_CARE);
 
-	//busy flag is now available
-	xTaskNotifyGiveIndexed(LCD_WriteTask, 0);
+	//busy flag is available once preceding data is written
+	xTaskNotifyGiveIndexed(LCD_write_task, 0);
+	//wait for queued data to be written
+	xTaskNotifyWait(0, 0, NULL, portMAX_DELAY);
 
 	if(use_4bit_mode)
 	{
 		//extra function set is required for entering 4-bit mode
 		LCD_SetFuncMode(LCD_4_BIT_MODE, LCD_DONT_CARE, LCD_DONT_CARE);
 
-		//both nibbles are hereby written
+		//lower nibble is writable once preceding data is written
 		//only applicable in 4-bit mode
-		xTaskNotifyGiveIndexed(LCD_WriteTask, 1);
+		xTaskNotifyGiveIndexed(LCD_write_task, 1);
+		//wait for queued data to be written
+		xTaskNotifyWait(0, 0, NULL, portMAX_DELAY);
 	}
 }
 
@@ -147,7 +172,7 @@ void LCD_SetFuncMode(uint8_t data_length_flag, uint8_t line_num_flag, uint8_t fo
 	frame.data = LCD_FUNC_SET | data_length_flag | line_num_flag | font_type_flag;
 	frame.dest_reg = LCD_REG_INSTRUCTION;
 
-	xQueueSend(LCD_WriteQueue, &frame, portMAX_DELAY);
+	xQueueSend(LCD_write_queue, &frame, portMAX_DELAY);
 }
 
 void LCD_SetEntryMode(uint8_t shift_dir_flag, uint8_t shift_mode_flag)
@@ -158,7 +183,7 @@ void LCD_SetEntryMode(uint8_t shift_dir_flag, uint8_t shift_mode_flag)
 	frame.data = LCD_ENTRY_MODE | shift_dir_flag | shift_mode_flag;
 	frame.dest_reg = LCD_REG_INSTRUCTION;
 
-	xQueueSend(LCD_WriteQueue, &frame, portMAX_DELAY);
+	xQueueSend(LCD_write_queue, &frame, portMAX_DELAY);
 }
 
 void LCD_TurnOnDisplay(void)
@@ -168,7 +193,7 @@ void LCD_TurnOnDisplay(void)
 	frame.data = LCD_DISPLAY_CTRL | LCD_DISPLAY_ON | cursor_showing | cursor_blinking;
 	frame.dest_reg = LCD_REG_INSTRUCTION;
 
-	xQueueSend(LCD_WriteQueue, &frame, portMAX_DELAY);
+	xQueueSend(LCD_write_queue, &frame, portMAX_DELAY);
 }
 
 void LCD_TurnOffDisplay(void)
@@ -178,7 +203,7 @@ void LCD_TurnOffDisplay(void)
 	frame.data = LCD_DISPLAY_CTRL | LCD_DISPLAY_OFF | cursor_showing | cursor_blinking;
 	frame.dest_reg = LCD_REG_INSTRUCTION;
 
-	xQueueSend(LCD_WriteQueue, &frame, portMAX_DELAY);
+	xQueueSend(LCD_write_queue, &frame, portMAX_DELAY);
 }
 
 void LCD_WriteText(const char* text)
@@ -190,7 +215,7 @@ void LCD_WriteText(const char* text)
 	for(int i=0; i < strlen(text); i++)
 	{
 		frame.data = text[i];
-		xQueueSend(LCD_WriteQueue, &frame, portMAX_DELAY);
+		xQueueSend(LCD_write_queue, &frame, portMAX_DELAY);
 	}
 }
 
@@ -201,7 +226,7 @@ void LCD_ClearDisplay(void)
 	frame.data = LCD_CLEAR;
 	frame.dest_reg = LCD_REG_INSTRUCTION;
 
-	xQueueSend(LCD_WriteQueue, &frame, portMAX_DELAY);
+	xQueueSend(LCD_write_queue, &frame, portMAX_DELAY);
 }
 
 void LCD_SetCursorMode(uint8_t show_cursor, uint8_t blink_cursor)
@@ -216,7 +241,7 @@ void LCD_SetCursorMode(uint8_t show_cursor, uint8_t blink_cursor)
 			(blink_cursor ? LCD_CURSOR_BLINK_ON: LCD_CURSOR_BLINK_OFF);
 	frame.dest_reg = LCD_REG_INSTRUCTION;
 
-	xQueueSend(LCD_WriteQueue, &frame, portMAX_DELAY);
+	xQueueSend(LCD_write_queue, &frame, portMAX_DELAY);
 }
 
 void LCD_SetCursorPos(uint8_t row, uint8_t column)
@@ -229,7 +254,7 @@ void LCD_SetCursorPos(uint8_t row, uint8_t column)
 	frame.data = LCD_CURSOR_SET | (column + row * 0x40);
 	frame.dest_reg = LCD_REG_INSTRUCTION;
 
-	xQueueSend(LCD_WriteQueue, &frame, portMAX_DELAY);
+	xQueueSend(LCD_write_queue, &frame, portMAX_DELAY);
 }
 
 void LCD_SetCursorHome(void)
@@ -239,5 +264,5 @@ void LCD_SetCursorHome(void)
 	frame.data = LCD_HOME;
 	frame.dest_reg = LCD_REG_INSTRUCTION;
 
-	xQueueSend(LCD_WriteQueue, &frame, portMAX_DELAY);
+	xQueueSend(LCD_write_queue, &frame, portMAX_DELAY);
 }
