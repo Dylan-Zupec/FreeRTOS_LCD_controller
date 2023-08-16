@@ -10,7 +10,7 @@ LCD_ControllerInit() is necessitated. The user is then capable of writing text,
 moving the cursor, and more, all in single function calls.
 
 This application works in 4-bit as well as 8-bit mode with the intent of adding 
-compatability with SPI.
+compatability with SPI communication.
 
 As the time it would take to check the busy flag of the LCD is limited to a 
 minimum of 2 ms (HAL_Delay() is 1 ms minimum and a read operation requires two
