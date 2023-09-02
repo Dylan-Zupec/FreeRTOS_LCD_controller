@@ -1,6 +1,8 @@
 /*lcd_controller_public.h*/
 
-void LCD_InitController(uint32_t use_4bit_mode);
+typedef enum {LCD_4BIT, LCD_8BIT, LCD_SPI} LCD_Mode_e;
+
+void LCD_InitController(LCD_Mode_e LCD_mode);
 void LCD_TurnOnDisplay(void);
 void LCD_TurnOffDisplay(void);
 void LCD_WriteText(const char* text);

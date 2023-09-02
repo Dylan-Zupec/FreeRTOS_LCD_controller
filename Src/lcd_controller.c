@@ -2,23 +2,33 @@
 
 #include "lcd_controller_private.h"
 
-void LCD_InitController(uint8_t use_4bit_mode)
+void LCD_InitController(LCD_Mode_e LCD_mode)
 {
-	LCD_init_task = xTaskGetCurrentTaskHandle();
-
 	cursor_showing = cursor_blinking = pdFALSE;
 
-	//stores data to write to LCD
+	LCD_init_task = xTaskGetCurrentTaskHandle();
+
+	if(LCD_mode == LCD_SPI)
+	{
+#ifdef LCD_SPI_PINS_DEFINED
+		//chip select is active low
+		HAL_GPIO_WritePin(LCD_SPI_CS_GPIO_Port, LCD_SPI_CS_Pin, GPIO_PIN_SET);
+#else
+		configTHROW_EXCEPTION("error: SPI LCD pins not defined");
+#endif
+	}
+
+	//data to write to LCD
 	LCD_write_queue = xQueueCreate(40, sizeof(LCD_Frame_t));
 
 	//writes queued data to LCD
 	xTaskCreate(LCD_WriteHandler, "LCD Write", 200,
-			(void*)(uint32_t)use_4bit_mode, 3, &LCD_write_task);
+			(void*)(uint32_t)LCD_mode, 3, &LCD_write_task);
 
-	LCD_WriteInitSeq(use_4bit_mode);
+	LCD_WriteInitSeq(LCD_mode == LCD_4BIT);
 
-	LCD_SetFuncMode(use_4bit_mode ? LCD_4_BIT_MODE : LCD_8_BIT_MODE,
-			LCD_2_LINE_MODE, LCD_5x8_FONT);
+	LCD_SetFuncMode(LCD_mode == LCD_4BIT ? LCD_4BIT_MODE : LCD_8BIT_MODE,
+			LCD_2LINE_MODE, LCD_5x8_FONT);
 
 	LCD_TurnOffDisplay();
 
@@ -29,7 +39,7 @@ void LCD_InitController(uint8_t use_4bit_mode)
 	LCD_TurnOnDisplay();
 }
 
-void LCD_WriteHandler(void* use_4bit_mode)
+void LCD_WriteHandler(void* LCD_mode)
 {
 	//busy flag is not available for first part of init sequence
 	uint8_t busyflag_available = pdFALSE;
@@ -47,9 +57,12 @@ void LCD_WriteHandler(void* use_4bit_mode)
 		if(!awaiting_empty_queue)
 		{
 			//init task notifies index 0 when busy flag is available
+			if(!busyflag_available && ulTaskNotifyTakeIndexed(0, pdTRUE, 0) == 1)
+				awaiting_empty_queue = pdTRUE;
+
 			//init task notifies index 1 when lower nibble is writable
-			if((!busyflag_available && ulTaskNotifyTakeIndexed(0, pdTRUE, 0) == 1) ||
-					(!lower_nibble_writable && ulTaskNotifyTakeIndexed(1, pdTRUE, 0) == 1))
+			else if((uint32_t)LCD_mode == LCD_4BIT && !lower_nibble_writable &&
+					ulTaskNotifyTakeIndexed(1, pdTRUE, 0) == 1)
 				awaiting_empty_queue = pdTRUE;
 		}
 
@@ -58,26 +71,22 @@ void LCD_WriteHandler(void* use_4bit_mode)
 		if(busyflag_available)
 			HAL_Delay(2);
 
-		if((uint32_t)use_4bit_mode)
-		{
-			LCD_4Bit_WritePins(frame.dest_reg, LCD_WRITE, frame.data >> 4);
-
-			if(lower_nibble_writable)
-				LCD_4Bit_WritePins(frame.dest_reg, LCD_WRITE, frame.data);
-		}
-		else //use 8-bit mode
-			LCD_8Bit_WritePins(frame.dest_reg, LCD_WRITE, frame.data);
+		LCD_WritePins((uint32_t)LCD_mode, frame.dest_reg, LCD_WRITE, frame.data);
 
 		if(awaiting_empty_queue)
 		{
 			if(!busyflag_available && uxQueueMessagesWaiting(LCD_write_queue) == 0)
 			{
+				//queue has been processed to point where busy flag is available
 				busyflag_available = pdTRUE;
 				awaiting_empty_queue = pdFALSE;
 				xTaskNotify(LCD_init_task, 0, eNoAction);
 			}
-			else if(!lower_nibble_writable && uxQueueMessagesWaiting(LCD_write_queue) == 0)
+
+			else if((uint32_t)LCD_mode == LCD_4BIT && !lower_nibble_writable &&
+					uxQueueMessagesWaiting(LCD_write_queue) == 0)
 			{
+				//queue has been processed to point where lower nibble is writable
 				lower_nibble_writable = pdTRUE;
 				awaiting_empty_queue = pdFALSE;
 				xTaskNotify(LCD_init_task, 0, eNoAction);
@@ -86,6 +95,37 @@ void LCD_WriteHandler(void* use_4bit_mode)
 	}
 }
 
+void LCD_WritePins(LCD_Mode_e LCD_mode, LCD_Register_e dest_reg, LCD_Operation_e operation, uint8_t data)
+{
+	switch(LCD_mode)
+	{
+	case LCD_4BIT:
+#ifdef LCD_4BIT_PINS_DEFINED
+		LCD_4Bit_WritePins(dest_reg, LCD_WRITE, data >> 4);
+		if(lower_nibble_writable)
+			LCD_4Bit_WritePins(dest_reg, LCD_WRITE, data);
+#else
+		configTHROW_EXCEPTION("error: 4-bit LCD pins not defined");
+#endif
+		break;
+	case LCD_8BIT:
+#ifdef LCD_8BIT_PINS_DEFINED
+		LCD_8Bit_WritePins(dest_reg, LCD_WRITE, data);
+#else
+		configTHROW_EXCEPTION("error: 8-bit LCD pins not defined");
+#endif
+		break;
+	case LCD_SPI:
+#ifdef LCD_SPI_PINS_DEFINED
+		LCD_SPI_WritePins(dest_reg, LCD_WRITE, data);
+#else
+		configTHROW_EXCEPTION("error: SPI LCD pins not defined");
+#endif
+		break;
+	}
+}
+
+#ifdef LCD_8BIT_PINS_DEFINED
 void LCD_8Bit_WritePins(LCD_Register_e dest_reg, LCD_Operation_e operation, uint8_t data)
 {
 	//setup data
@@ -107,7 +147,9 @@ void LCD_8Bit_WritePins(LCD_Register_e dest_reg, LCD_Operation_e operation, uint
 	//data hold time and enable pulse low width
 	HAL_Delay(1);
 }
+#endif
 
+#ifdef LCD_4BIT_PINS_DEFINED
 void LCD_4Bit_WritePins(LCD_Register_e dest_reg, LCD_Operation_e operation, uint8_t data)
 {
 	//writes lower nibble of data only
@@ -130,21 +172,62 @@ void LCD_4Bit_WritePins(LCD_Register_e dest_reg, LCD_Operation_e operation, uint
 	//data hold time and enable pulse low width
 	HAL_Delay(1);
 }
+#endif
+
+#ifdef LCD_SPI_PINS_DEFINED
+void LCD_SPI_WritePins(LCD_Register_e dest_reg, LCD_Operation_e operation, uint8_t data)
+{
+	/********Frame Format********/
+	//MSB first
+	//byte 2: [D7|...|D0]
+	//byte 1: [E|RW|RS|-|-|-|X|X]
+	/****************************/
+	//D7-D0	 = 	data pins 7-0
+	//E 	 =	enable pin
+	//RW 	 = 	read/write pin
+	//RS 	 = 	register select
+	//-		 =  unused
+	//X		 = 	reserved
+	/****************************/
+	uint8_t frame_bytes[2];
+
+	//pull chip select low to select LCD
+	HAL_GPIO_WritePin(LCD_SPI_CS_GPIO_Port, LCD_SPI_CS_Pin, GPIO_PIN_RESET);
+
+	//setup data, read/write, and register select; pulse enable high
+	frame_bytes[0] = (1 << 7) | (operation << 6) | (dest_reg << 5);
+	frame_bytes[1] = data;
+	HAL_SPI_Transmit(&hspi2, frame_bytes, 1, HAL_MAX_DELAY);
+
+	//data setup time and enable pulse high width
+	HAL_Delay(1);
+
+	//LCD is written on falling edge of enable
+	frame_bytes[0] = (0 << 7) | (operation << 6) | (dest_reg << 5);
+	HAL_SPI_Transmit(&hspi2, frame_bytes, 1, HAL_MAX_DELAY);
+
+	//data hold time and enable pulse low width
+	HAL_Delay(1);
+
+	//unselect LCD and reset ICs by pullig chip select high
+	HAL_GPIO_WritePin(LCD_SPI_CS_GPIO_Port, LCD_SPI_CS_Pin, GPIO_PIN_SET);
+}
+#endif
 
 void LCD_WriteInitSeq(uint8_t use_4bit_mode)
 {
 	//special init sequence required on power on
 	//wait 100 ms after power on
 	HAL_Delay(100);
-	LCD_SetFuncMode(LCD_8_BIT_MODE, LCD_DONT_CARE, LCD_DONT_CARE);
+	LCD_SetFuncMode(LCD_8BIT_MODE, LCD_DONT_CARE, LCD_DONT_CARE);
 
 	//wait another 10 ms
 	HAL_Delay(10);
-	LCD_SetFuncMode(LCD_8_BIT_MODE, LCD_DONT_CARE, LCD_DONT_CARE);
+	LCD_SetFuncMode(LCD_8BIT_MODE, LCD_DONT_CARE, LCD_DONT_CARE);
 
 	//wait at least 200 us
 	HAL_Delay(1); //not ideal but shortest delay possible
-	LCD_SetFuncMode(LCD_8_BIT_MODE, LCD_DONT_CARE, LCD_DONT_CARE);
+	LCD_SetFuncMode(LCD_8BIT_MODE, LCD_DONT_CARE, LCD_DONT_CARE);
 
 	//busy flag is available once preceding data is written
 	xTaskNotifyGiveIndexed(LCD_write_task, 0);
@@ -154,7 +237,7 @@ void LCD_WriteInitSeq(uint8_t use_4bit_mode)
 	if(use_4bit_mode)
 	{
 		//extra function set is required for entering 4-bit mode
-		LCD_SetFuncMode(LCD_4_BIT_MODE, LCD_DONT_CARE, LCD_DONT_CARE);
+		LCD_SetFuncMode(LCD_4BIT_MODE, LCD_DONT_CARE, LCD_DONT_CARE);
 
 		//lower nibble is writable once preceding data is written
 		//only applicable in 4-bit mode

@@ -7,7 +7,6 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "lcd_controller_public.h"
-
 /*FreeRTOS related header files*/
 #include "freeRTOS.h"
 #include "task.h"
@@ -176,11 +175,11 @@ static void MX_SPI2_Init(void)
   hspi2.Instance = SPI2;
   hspi2.Init.Mode = SPI_MODE_MASTER;
   hspi2.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi2.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi2.Init.DataSize = SPI_DATASIZE_16BIT;
   hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi2.Init.CLKPhase = SPI_PHASE_2EDGE;
   hspi2.Init.NSS = SPI_NSS_SOFT;
-  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_256;
   hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -208,44 +207,17 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, LCD_D7_Pin|LCD_D6_Pin|LCD_D5_Pin|LCD_D1_Pin
-                          |LCD_D2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LCD_SPI_CS_GPIO_Port, LCD_SPI_CS_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, LCD_D0_Pin|LCD_RS_Pin|LCD_E_Pin|LCD_RW_Pin
-                          |LCD_D4_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LCD_D3_GPIO_Port, LCD_D3_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pins : LCD_D7_Pin LCD_D6_Pin LCD_D5_Pin LCD_D1_Pin
-                           LCD_D2_Pin */
-  GPIO_InitStruct.Pin = LCD_D7_Pin|LCD_D6_Pin|LCD_D5_Pin|LCD_D1_Pin
-                          |LCD_D2_Pin;
+  /*Configure GPIO pin : LCD_SPI_CS_Pin */
+  GPIO_InitStruct.Pin = LCD_SPI_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : LCD_D0_Pin LCD_RS_Pin LCD_E_Pin LCD_RW_Pin
-                           LCD_D4_Pin */
-  GPIO_InitStruct.Pin = LCD_D0_Pin|LCD_RS_Pin|LCD_E_Pin|LCD_RW_Pin
-                          |LCD_D4_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : LCD_D3_Pin */
-  GPIO_InitStruct.Pin = LCD_D3_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LCD_D3_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(LCD_SPI_CS_GPIO_Port, &GPIO_InitStruct);
 
 /* USER CODE BEGIN MX_GPIO_Init_2 */
 /* USER CODE END MX_GPIO_Init_2 */
@@ -254,8 +226,7 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 void MainHandler(void* parameters)
 {
-	//initialize LCD with 4-bit mode
-	LCD_InitController(pdTRUE);
+	LCD_InitController(LCD_SPI);
 
 	LCD_SetCursorMode(pdTRUE, pdTRUE); //show and blink cursor
 	LCD_WriteText("FreeRTOS LCD App");
@@ -277,8 +248,7 @@ void vApplicationMallocFailedHook( void )
 	FreeRTOSConfig.h, and the xPortGetFreeHeapSize() API function can be used
 	to query the size of free heap space that remains (although it does not
 	provide information on how the remaining heap might be fragmented). */
-	taskDISABLE_INTERRUPTS();
-	for( ;; );
+	configTHROW_EXCEPTION("error: malloc failed");
 }
 
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char * pcTaskName)
@@ -286,8 +256,7 @@ void vApplicationStackOverflowHook(TaskHandle_t xTask, char * pcTaskName)
 	/* Run time stack overflow checking is performed if
 	configCHECK_FOR_STACK_OVERFLOW is defined to 1 or 2.  This hook
 	function is called if a stack overflow is detected. */
-	taskDISABLE_INTERRUPTS();
-	for( ;; );
+	configTHROW_EXCEPTION("error: stack overflow");
 }
 /* USER CODE END 4 */
 
