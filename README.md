@@ -15,6 +15,6 @@ a little hardware, it is also compatible with Serial Peripheral Interface (SPI).
 The demo application uses SPI and interfaces with the LCD using a circuit 
 consisting of two 8-bit shift registers, a 4-bit counter, and a hex inverter.
 
-(./demo-picture.jpg)
+![Alt text](./demo-picture.jpg)
  
       
