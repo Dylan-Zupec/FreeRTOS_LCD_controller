@@ -186,8 +186,8 @@ void LCD_SPI_WritePins(LCD_Register_e dest_reg, LCD_Operation_e operation, uint8
 	//E 	 =	enable pin
 	//RW 	 = 	read/write pin
 	//RS 	 = 	register select
-	//-		 =  unused
-	//X		 = 	reserved
+	//-	 =      unused
+	//X	 = 	reserved
 	/****************************/
 	uint8_t frame_bytes[2];
 
