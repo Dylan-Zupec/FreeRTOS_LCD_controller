@@ -41,14 +41,14 @@
 /*LCD_FUNC_SET*/
 #define LCD_5x11_FONT		0x4
 #define LCD_5x8_FONT		0
-#define LCD_8BIT_MODE			0x10
-#define LCD_4BIT_MODE			0
-#define LCD_2LINE_MODE			0x8
-#define LCD_1LINE_MODE			0
+#define LCD_8BIT_MODE	        0x10
+#define LCD_4BIT_MODE		0
+#define LCD_2LINE_MODE		0x8
+#define LCD_1LINE_MODE		0
 /*************************************/
 
 #define LCD_UNDEF_GPIO_Port 	0
-#define LCD_UNDEF_Pin		 	0
+#define LCD_UNDEF_Pin		0
 
 #ifdef LCD_D0_GPIO_Port
 #define LCD_8BIT_PINS_DEFINED
